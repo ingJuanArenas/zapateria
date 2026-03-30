@@ -27,6 +27,26 @@ type ItemCarrito = {
 
 type Modalidad = "contado" | "credito";
 
+type UltimaFactura = {
+  clienteNombre: string;
+  fecha: string;
+  modalidad: Modalidad;
+  metodoPago: string;
+  notas: string | null;
+  total: number;
+  items: {
+    nombre: string;
+    referencia: string;
+    cantidad: number;
+    precio_unitario: number;
+    subtotal: number;
+  }[];
+};
+
+function etiquetaModalidadFactura(m: Modalidad) {
+  return m === "credito" ? "Crédito" : "Contado";
+}
+
 function VentasContent() {
   const [clientes, setClientes] = useState<Cliente[]>([]);
   const [productos, setProductos] = useState<Producto[]>([]);
@@ -42,6 +62,10 @@ function VentasContent() {
   const [modalidad, setModalidad] = useState<Modalidad>("contado");
   const [notas, setNotas] = useState("");
   const [guardando, setGuardando] = useState(false);
+  const [metodoPago, setMetodoPago] = useState<"efectivo" | "nequi" | "transferencia">("efectivo");
+  const [ultimaFactura, setUltimaFactura] = useState<UltimaFactura | null>(
+    null,
+  );
 
   useEffect(() => {
     const cargar = async () => {
@@ -248,8 +272,9 @@ function VentasContent() {
           saldo_pendiente: esCredito ? totalVenta : 0,
           estado: esCredito ? "pendiente" : "pagada",
           notas: notas.trim() || null,
+          metodo_pago: metodoPago,
         })
-        .select("id")
+        .select("id, fecha")
         .single();
 
       if (errorVenta || !venta) {
@@ -288,6 +313,32 @@ function VentasContent() {
           .eq("id", item.producto.id);
       }
 
+      const { data: clienteRow } = await supabase
+        .from("clientes")
+        .select("nombre")
+        .eq("id", idCliente)
+        .single();
+      const clienteNombre = clienteRow?.nombre ?? "Cliente";
+
+      const notasFactura = notas.trim() || null;
+      const itemsFactura = carrito.map((item) => ({
+        nombre: item.producto.nombre,
+        referencia: item.producto.referencia,
+        cantidad: item.cantidad,
+        precio_unitario: item.precio_unitario,
+        subtotal: item.cantidad * item.precio_unitario,
+      }));
+
+      setUltimaFactura({
+        clienteNombre,
+        fecha: venta.fecha,
+        modalidad,
+        metodoPago,
+        notas: notasFactura,
+        total: totalVenta,
+        items: itemsFactura,
+      });
+
       setMensaje(
         esCredito
           ? "Venta registrada a crédito. El saldo quedó en cartera."
@@ -296,11 +347,20 @@ function VentasContent() {
       setCarrito([]);
       setNotas("");
       setClienteId("");
+      setMetodoPago("efectivo");
       setGuardando(false);
     } catch {
       setError("Ocurrió un error al registrar la venta.");
       setGuardando(false);
     }
+  }
+
+  function actualizarPrecioUnitario(idProducto: string, precioUnitario: number): void {
+    setCarrito((prev) =>
+      prev.map((i) =>
+        i.producto.id === idProducto ? { ...i, precio_unitario: precioUnitario } : i,
+      ),
+    );
   }
 
   return (
@@ -315,14 +375,6 @@ function VentasContent() {
         </div>
       </div>
 
-      {(mensaje || error) && (
-        <div className="rounded-md border border-slate-200 bg-white p-3 text-xs">
-          {mensaje && (
-            <div className="mb-1 text-emerald-700">{mensaje}</div>
-          )}
-          {error && <div className="text-red-600">{error}</div>}
-        </div>
-      )}
 
       <form
         onSubmit={registrarVenta}
@@ -469,8 +521,15 @@ function VentasContent() {
                         }
                         className="w-12 rounded border border-slate-200 px-1 py-0.5 text-right text-[11px] outline-none focus:border-slate-400"
                       />
-                      <div className="text-[11px] text-slate-700">
-                        x ${item.precio_unitario.toLocaleString("es-CO")}
+                        <div className="text-[11px] text-slate-700">
+                        x <input 
+                            type="number" 
+                            name="precio_unitario" 
+                            value={item.precio_unitario === 0 ? "" : item.precio_unitario} 
+                            min="0"
+                            onChange={(e) => actualizarPrecioUnitario(item.producto.id, Number(e.target.value || 0))} 
+                            className="w-14 rounded border border-slate-200 px-1 py-0.5 text-right text-[11px] outline-none focus:border-slate-400"
+                          />
                       </div>
                       <div className="text-[11px] font-semibold text-slate-900">
                         $
@@ -517,6 +576,25 @@ function VentasContent() {
                   Crédito
                 </button>
               </div>
+              <div className="mb-2">
+              <label className="mb-1 block text-xs text-slate-600">Método de pago</label>
+              <div className="flex gap-2">
+                {(["efectivo", "nequi", "transferencia"] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setMetodoPago(m)}
+                    className={`rounded border px-2 py-1 text-[11px] capitalize ${
+                      metodoPago === m
+                        ? "border-emerald-500 bg-emerald-50 text-emerald-700"
+                        : "border-slate-200 hover:bg-slate-50"
+                    }`}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            </div>
               <label className="mb-1 block text-xs text-slate-600">
                 Notas (opcional)
               </label>
@@ -552,6 +630,101 @@ function VentasContent() {
           </button>
         </div>
       </form>
+
+      {(mensaje || error) && (
+        <div className="rounded-md border border-slate-200 bg-white p-3 text-xs font-bold">
+          {mensaje && (
+            <div className="mb-1 text-emerald-700">{mensaje}</div>
+          )}
+          {error && <div className="text-red-600">{error}</div>}
+
+        </div>
+      )}
+
+      {ultimaFactura && (
+  <div className="mt-4 rounded-md border border-slate-200 bg-white p-4">
+    <div className="mb-3 flex items-center justify-between">
+      <h2 className="text-sm font-semibold">Factura generada</h2>
+      <button
+        type="button"
+        onClick={() => {
+          const contenido = `
+            <html>
+              <head>
+                <meta charset="utf-8"/>
+                <title>Factura Kairos Store</title>
+                <style>
+                  body { font-family: Arial, sans-serif; font-size: 12px; padding: 32px; color: #1a1a1a; }
+                  h1 { font-size: 18px; text-align: center; margin-bottom: 4px; }
+                  .sub { text-align: center; color: #666; font-size: 11px; margin-bottom: 20px; }
+                  .info { margin-bottom: 16px; font-size: 11px; }
+                  .info p { margin: 3px 0; }
+                  table { width: 100%; border-collapse: collapse; margin-bottom: 16px; font-size: 11px; }
+                  th { border-bottom: 1px solid #ccc; padding: 6px 4px; text-align: left; color: #555; }
+                  td { border-bottom: 1px solid #eee; padding: 6px 4px; }
+                  td:last-child, th:last-child { text-align: right; }
+                  .totales { font-size: 11px; border-top: 1px solid #ccc; padding-top: 12px; }
+                  .totales p { margin: 3px 0; }
+                  .total-final { font-size: 14px; font-weight: bold; margin-top: 6px; }
+                  .notas { font-size: 11px; color: #555; margin-top: 12px; }
+                </style>
+              </head>
+              <body>
+                <h1>Kairos Store</h1>
+                <p class="sub">Factura de venta</p>
+                <div class="info">
+                  <p><strong>Fecha:</strong> ${new Date(ultimaFactura.fecha).toLocaleString("es-CO", { dateStyle: "medium", timeStyle: "short" })}</p>
+                  <p><strong>Cliente:</strong> ${ultimaFactura.clienteNombre}</p>
+                </div>
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Producto</th>
+                      <th>Ref.</th>
+                      <th>Cant.</th>
+                      <th>P. unit.</th>
+                      <th>Subtotal</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${ultimaFactura.items.map(it => `
+                      <tr>
+                        <td>${it.nombre}</td>
+                        <td>${it.referencia}</td>
+                        <td>${it.cantidad}</td>
+                        <td>$ ${it.precio_unitario.toLocaleString("es-CO")}</td>
+                        <td>$ ${it.subtotal.toLocaleString("es-CO")}</td>
+                      </tr>
+                    `).join("")}
+                  </tbody>
+                </table>
+                <div class="totales">
+                  <p><strong>Modalidad:</strong> ${ultimaFactura.modalidad === "credito" ? "Crédito" : "Contado"}</p>
+                  <p class="capitalize"><strong>Método de pago:</strong> ${ultimaFactura.metodoPago}</p>
+                  <p class="total-final">Total: $ ${ultimaFactura.total.toLocaleString("es-CO")}</p>
+                  ${ultimaFactura.notas ? `<p class="notas"><strong>Notas:</strong> ${ultimaFactura.notas}</p>` : ""}
+                </div>
+                <script>window.onload = function(){ window.print(); }</script>
+              </body>
+            </html>
+          `;
+          const ventana = window.open("", "_blank");
+          if (ventana) {
+            ventana.document.write(contenido);
+            ventana.document.close();
+          }
+        }}
+        className="rounded border border-slate-200 px-3 py-1.5 text-xs hover:bg-slate-50"
+      >
+        Imprimir factura
+      </button>
+    </div>
+    <div className="text-xs text-slate-500">
+      Venta de <span className="font-medium text-slate-700">{ultimaFactura.clienteNombre}</span> por{" "}
+      <span className="font-medium text-slate-700">$ {ultimaFactura.total.toLocaleString("es-CO")}</span> registrada correctamente.
+    </div>
+  </div>
+)}
     </div>
   );
 }
@@ -563,5 +736,6 @@ export default function VentasPage() {
     </AuthGuard>
   );
 }
+
 
 

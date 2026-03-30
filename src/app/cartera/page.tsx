@@ -21,6 +21,7 @@ type Cliente = {
 
 type VentaConCliente = Venta & {
   cliente?: Cliente;
+  referencias?: string;
 };
 
 type DetalleItem = {
@@ -32,20 +33,34 @@ type DetalleItem = {
   producto_referencia: string;
 };
 
-function CarteraContent() {
+type PagoHistorial = {
+  id: string;
+  venta_id: string;
+  monto: number;
+  fecha: string;
+  notas: string | null;
+  metodo_pago: string;
+};
+
+function CarteraContent(){
   const [ventas, setVentas] = useState<VentaConCliente[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mensaje, setMensaje] = useState<string | null>(null);
-
+  const [orden, setOrden] = useState<"nombre" | "valor">("nombre");
   const [ventaSeleccionada, setVentaSeleccionada] = useState<VentaConCliente | null>(null);
   const [detalle, setDetalle] = useState<DetalleItem[]>([]);
   const [detalleCargando, setDetalleCargando] = useState(false);
+  const [historialPagos, setHistorialPagos] = useState<
+    (PagoHistorial & { saldo_despues: number })[]
+  >([]);
 
   const [ventaPago, setVentaPago] = useState<VentaConCliente | null>(null);
   const [montoPago, setMontoPago] = useState("");
   const [notasPago, setNotasPago] = useState("");
   const [guardandoPago, setGuardandoPago] = useState(false);
+  const [metodoPago, setMetodoPago] = useState<"efectivo" | "nequi" | "transferencia">("efectivo");
+
 
   useEffect(() => {
     cargarCartera();
@@ -86,10 +101,33 @@ function CarteraContent() {
       }
     }
 
+    const idsVentas = ventasData.map((v) => v.id);
+    let referenciasMap = new Map<string, string>();
+    
+    if (idsVentas.length > 0) {
+      const { data: itemsData } = await supabase
+        .from("venta_items")
+        .select("venta_id, productos (referencia)")
+        .in("venta_id", idsVentas);
+    
+      if (itemsData) {
+        for (const item of itemsData as any[]) {
+          const ref = item.productos?.referencia;
+          if (!ref) continue;
+          const actual = referenciasMap.get(item.venta_id);
+          referenciasMap.set(
+            item.venta_id,
+            actual ? `${actual}, ${ref}` : ref,
+          );
+        }
+      }
+    }
+    
     const ventasConCliente: VentaConCliente[] = (ventasData as Venta[]).map(
       (v) => ({
         ...v,
         cliente: clientesMap.get(v.cliente_id),
+        referencias: referenciasMap.get(v.id) ?? "-",
       }),
     );
 
@@ -100,22 +138,30 @@ function CarteraContent() {
   async function abrirDetalle(venta: VentaConCliente) {
     setVentaSeleccionada(venta);
     setDetalle([]);
+    setHistorialPagos([]);
     setDetalleCargando(true);
 
-    const { data, error } = await supabase
-      .from("venta_items")
-      .select(
-        "id, venta_id, cantidad, precio_unitario, productos (nombre, referencia)",
-      )
-      .eq("venta_id", venta.id);
+    const [itemsRes, pagosRes] = await Promise.all([
+      supabase
+        .from("venta_items")
+        .select(
+          "id, venta_id, cantidad, precio_unitario, productos (nombre, referencia)",
+        )
+        .eq("venta_id", venta.id),
+      supabase
+        .from("pagos")
+        .select("id, venta_id, monto, fecha, notas, metodo_pago")
+        .eq("venta_id", venta.id)
+        .order("fecha", { ascending: true }),
+    ]);
 
-    if (error || !data) {
+    if (itemsRes.error || !itemsRes.data) {
       setError("No se pudo cargar el detalle de la venta.");
       setDetalleCargando(false);
       return;
     }
 
-    const items: DetalleItem[] = (data as any[]).map((i) => ({
+    const items: DetalleItem[] = (itemsRes.data as any[]).map((i) => ({
       id: i.id,
       venta_id: i.venta_id,
       cantidad: i.cantidad,
@@ -123,8 +169,25 @@ function CarteraContent() {
       producto_nombre: i.productos?.nombre ?? "Producto",
       producto_referencia: i.productos?.referencia ?? "",
     }));
-
     setDetalle(items);
+
+    if (!pagosRes.error && pagosRes.data) {
+      const pagosRaw = pagosRes.data as PagoHistorial[];
+      const pagosOrdenados = [...pagosRaw].sort(
+        (a, b) => new Date(a.fecha).getTime() - new Date(b.fecha).getTime(),
+      );
+      let acumulado = 0;
+      const conSaldo = pagosOrdenados.map((p) => {
+        acumulado += p.monto;
+        return {
+          ...p,
+          saldo_despues: Math.max(0, venta.total - acumulado),
+        };
+      });
+      setHistorialPagos(conSaldo);
+    } else {
+      setHistorialPagos([]);
+    }
     setDetalleCargando(false);
   }
 
@@ -132,7 +195,17 @@ function CarteraContent() {
     setVentaPago(venta);
     setMontoPago("");
     setNotasPago("");
+    setMetodoPago("efectivo");
   }
+
+  const ventasOrdenadas = useMemo(() => {
+    return [...ventas].sort((a, b) => {
+      if (orden === "nombre") {
+        return (a.cliente?.nombre ?? "").localeCompare(b.cliente?.nombre ?? "");
+      }
+      return b.saldo_pendiente - a.saldo_pendiente;
+    });
+  }, [ventas, orden]);
 
   const totalCartera = useMemo(
     () =>
@@ -165,6 +238,7 @@ function CarteraContent() {
       monto,
       fecha: new Date().toISOString(),
       notas: notasPago.trim() || null,
+      metodo_pago: metodoPago,
     });
 
     if (pagoError) {
@@ -219,6 +293,23 @@ function CarteraContent() {
         </div>
       )}
 
+      <div className="flex gap-2">
+        <span className="text-xs text-slate-500 self-center">Ordenar por:</span>
+        <button
+          type="button"
+          onClick={() => setOrden("nombre")}
+          className={`rounded border px-2 py-1 text-[11px] ${orden === "nombre" ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-slate-200 hover:bg-slate-50"}`}
+        >
+          A → Z
+        </button>
+        <button
+          type="button"
+          onClick={() => setOrden("valor")}
+          className={`rounded border px-2 py-1 text-[11px] ${orden === "valor" ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-slate-200 hover:bg-slate-50"}`}
+        >
+          Mayor deuda
+        </button>
+      </div>
       <div className="overflow-x-auto rounded-md border border-slate-200 bg-white">
         {loading ? (
           <div className="p-4 text-sm text-slate-500">
@@ -235,6 +326,7 @@ function CarteraContent() {
                 <th className="px-3 py-2">Cliente</th>
                 <th className="px-3 py-2">Teléfono</th>
                 <th className="px-3 py-2">Fecha</th>
+                <th className="px-3 py-2">Referencia</th>
                 <th className="px-3 py-2">Total</th>
                 <th className="px-3 py-2">Saldo pendiente</th>
                 <th className="px-3 py-2">Estado</th>
@@ -242,7 +334,7 @@ function CarteraContent() {
               </tr>
             </thead>
             <tbody>
-              {ventas.map((v) => (
+              {ventasOrdenadas.map((v) => (
                 <tr
                   key={v.id}
                   className="border-b border-slate-100 last:border-0"
@@ -255,6 +347,9 @@ function CarteraContent() {
                   </td>
                   <td className="px-3 py-2 text-xs sm:text-sm">
                     {new Date(v.fecha).toLocaleDateString("es-CO")}
+                  </td>
+                  <td className="px-3 py-2 text-xs sm:text-sm">
+                    {v.referencias ?? "-"}
                   </td>
                   <td className="px-3 py-2 text-xs sm:text-sm">
                     $ {v.total.toLocaleString("es-CO")}
@@ -292,7 +387,7 @@ function CarteraContent() {
 
       {ventaSeleccionada && (
         <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/30 px-4">
-          <div className="w-full max-w-md rounded-md bg-white p-4 shadow-lg text-sm">
+          <div className="max-h-[90vh] w-full max-w-2xl overflow-y-auto rounded-md bg-white p-4 shadow-lg text-sm">
             <h2 className="mb-2 text-base font-semibold">
               Detalle de la deuda
             </h2>
@@ -355,6 +450,62 @@ function CarteraContent() {
               </div>
             )}
 
+            <div className="mt-4 border-t border-slate-200 pt-3">
+              <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Historial de abonos
+              </h3>
+              {detalleCargando ? (
+                <div className="text-xs text-slate-500">
+                  Cargando abonos...
+                </div>
+              ) : historialPagos.length === 0 ? (
+                <div className="text-xs text-slate-500">
+                  No hay abonos registrados para esta venta.
+                </div>
+              ) : (
+                <div className="overflow-x-auto rounded border border-slate-100">
+                  <table className="min-w-full text-left text-[11px]">
+                    <thead className="border-b border-slate-100 bg-slate-50 text-[10px] uppercase text-slate-500">
+                      <tr>
+                        <th className="px-2 py-1.5">Fecha</th>
+                        <th className="px-2 py-1.5">Monto</th>
+                        <th className="px-2 py-1.5">Método</th>
+                        <th className="px-2 py-1.5">Notas</th>
+                        <th className="px-2 py-1.5 text-right">Saldo después</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {historialPagos.map((p) => (
+                        <tr
+                          key={p.id}
+                          className="border-b border-slate-50 last:border-0"
+                        >
+                          <td className="px-2 py-1.5 whitespace-nowrap">
+                            {new Date(p.fecha).toLocaleString("es-CO", {
+                              dateStyle: "short",
+                              timeStyle: "short",
+                            })}
+                          </td>
+                          <td className="px-2 py-1.5">
+                            ${p.monto.toLocaleString("es-CO")}
+                          </td>
+                          <td className="px-2 py-1.5 capitalize">
+                            {p.metodo_pago ?? "—"}
+                          </td>
+                          <td className="max-w-[140px] px-2 py-1.5 truncate text-slate-600" title={p.notas ?? ""}>
+                            {p.notas ?? "—"}
+                          </td>
+                          <td className="px-2 py-1.5 text-right font-medium">
+                            ${p.saldo_despues.toLocaleString("es-CO")}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
             <div className="mt-3 flex justify-end">
               <button
                 type="button"
@@ -396,6 +547,25 @@ function CarteraContent() {
                 />
               </div>
               <div>
+              <div>
+              <label className="mb-1 block text-xs">Método de pago</label>
+              <div className="flex gap-2">
+                {(["efectivo", "nequi", "transferencia"] as const).map((m) => (
+                  <button
+                    key={m}
+                    type="button"
+                    onClick={() => setMetodoPago(m)}
+                    className={`rounded border px-2 py-1 text-[11px] capitalize ${
+                      metodoPago === m
+                        ? "border-emerald-500 bg-emerald-50 text-emerald-700"
+                        : "border-slate-200 hover:bg-slate-50"
+                    }`}
+                  >
+                    {m}
+                  </button>
+                ))}
+              </div>
+            </div>
                 <label className="mb-1 block text-xs">
                   Notas (opcional)
                 </label>
@@ -429,6 +599,7 @@ function CarteraContent() {
     </div>
   );
 }
+
 
 export default function CarteraPage() {
   return (

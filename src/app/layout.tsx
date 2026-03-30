@@ -32,6 +32,9 @@ export default function RootLayout({
               <a href="/ventas" className="block rounded px-2 py-1.5 hover:bg-slate-100">
                 🧾 Ventas
               </a>
+              <a href="/clientes" className="block rounded px-2 py-1.5 hover:bg-slate-100">
+                👤 Clientes
+              </a>
               <a href="/cartera" className="block rounded px-2 py-1.5 hover:bg-slate-100">
                 💳 Cartera
               </a>
@@ -55,6 +58,9 @@ export default function RootLayout({
                 </a>
                 <a href="/ventas" className="rounded px-2 py-1 hover:bg-slate-100">
                   🧾
+                </a>
+                <a href="/clientes" className="rounded px-2 py-1 hover:bg-slate-100" title="Clientes">
+                  👤
                 </a>
                 <a href="/cartera" className="rounded px-2 py-1 hover:bg-slate-100">
                   💳

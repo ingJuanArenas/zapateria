@@ -23,3 +23,33 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+/* Solo visible al imprimir: ocultar el resto del documento */
+@media print {
+  body * {
+    visibility: hidden;
+  }
+  .print-invoice-root,
+  .print-invoice-root * {
+    visibility: visible;
+  }
+  .print-invoice-root {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    background: #fff;
+    color: #0f172a;
+    font-size: 12px;
+  }
+}
+
+.print-invoice-root {
+  position: fixed;
+  left: -9999px;
+  top: 0;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  pointer-events: none;
+}
