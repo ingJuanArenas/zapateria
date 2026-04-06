@@ -25,6 +25,19 @@ type FormState = {
   precio_mayorista: string;
 };
 
+type LoteStep = 1 | 2;
+
+type LoteFila = {
+  id: string;
+  nombre: string;
+  referencia: string;
+  color: string;
+  talla: string;
+  cantidad_disponible: number;
+  precio_unitario: number;
+  precio_mayorista: number | null;
+};
+
 const emptyForm: FormState = {
   referencia: "",
   nombre: "",
@@ -33,6 +46,17 @@ const emptyForm: FormState = {
   cantidad_disponible: "",
   precio_unitario: "",
   precio_mayorista: "",
+};
+
+const emptyLoteForm = {
+  nombreModelo: "",
+  referenciaBase: "",
+  colorInput: "",
+  tallaInput: "",
+  colores: [] as string[],
+  tallas: [] as string[],
+  stockInicial: "",
+  precioInicial: "",
 };
 
 function InventarioContent() {
@@ -49,6 +73,11 @@ function InventarioContent() {
   const [stockTipo, setStockTipo] = useState<"entrada" | "salida">("entrada");
   const [stockGuardando, setStockGuardando] = useState(false);
   const [mensaje, setMensaje] = useState<string | null>(null);
+  const [showLoteModal, setShowLoteModal] = useState(false);
+  const [loteStep, setLoteStep] = useState<LoteStep>(1);
+  const [loteSaving, setLoteSaving] = useState(false);
+  const [loteForm, setLoteForm] = useState(emptyLoteForm);
+  const [loteFilas, setLoteFilas] = useState<LoteFila[]>([]);
 
   useEffect(() => {
     cargarProductos();
@@ -76,6 +105,152 @@ function InventarioContent() {
     setEditing(null);
     setForm(emptyForm);
     setShowForm(true);
+  }
+
+  function abrirLote() {
+    setShowLoteModal(true);
+    setLoteStep(1);
+    setLoteSaving(false);
+    setLoteForm(emptyLoteForm);
+    setLoteFilas([]);
+    setError(null);
+    setMensaje(null);
+  }
+
+  function cerrarLote() {
+    setShowLoteModal(false);
+    setLoteStep(1);
+    setLoteSaving(false);
+    setLoteForm(emptyLoteForm);
+    setLoteFilas([]);
+  }
+
+  function agregarChipLote(tipo: "color" | "talla") {
+    if (tipo === "color") {
+      const valor = loteForm.colorInput.trim();
+      if (!valor) return;
+      if (loteForm.colores.includes(valor)) return;
+      setLoteForm((prev) => ({
+        ...prev,
+        colores: [...prev.colores, valor],
+        colorInput: "",
+      }));
+      return;
+    }
+
+    const valor = loteForm.tallaInput.trim();
+    if (!valor) return;
+    if (loteForm.tallas.includes(valor)) return;
+    setLoteForm((prev) => ({
+      ...prev,
+      tallas: [...prev.tallas, valor],
+      tallaInput: "",
+    }));
+  }
+
+  function eliminarChipLote(tipo: "color" | "talla", valor: string) {
+    if (tipo === "color") {
+      setLoteForm((prev) => ({
+        ...prev,
+        colores: prev.colores.filter((c) => c !== valor),
+      }));
+      return;
+    }
+    setLoteForm((prev) => ({
+      ...prev,
+      tallas: prev.tallas.filter((t) => t !== valor),
+    }));
+  }
+
+  function generarCombinacionesLote() {
+    const nombreModelo = loteForm.nombreModelo.trim();
+    const referenciaBase = loteForm.referenciaBase.trim();
+    if (!nombreModelo || !referenciaBase) {
+      setError("Debes completar nombre del modelo y referencia base.");
+      return;
+    }
+    if (loteForm.colores.length === 0 || loteForm.tallas.length === 0) {
+      setError("Agrega al menos un color y una talla para generar combinaciones.");
+      return;
+    }
+
+    const stockBase = Number(loteForm.stockInicial || 0);
+    const precioBase = Number(loteForm.precioInicial || 0);
+    const filas: LoteFila[] = [];
+
+    loteForm.colores.forEach((color) => {
+      loteForm.tallas.forEach((talla) => {
+        filas.push({
+          id: `${color}-${talla}-${Math.random().toString(36).slice(2, 8)}`,
+          nombre: nombreModelo,
+          referencia: referenciaBase,
+          color,
+          talla,
+          cantidad_disponible: stockBase >= 0 ? stockBase : 0,
+          precio_unitario: precioBase >= 0 ? precioBase : 0,
+          precio_mayorista: null,
+        });
+      });
+    });
+
+    setLoteFilas(filas);
+    setLoteStep(2);
+    setError(null);
+  }
+
+  function actualizarFilaLote(
+    id: string,
+    key: "cantidad_disponible" | "precio_unitario" | "precio_mayorista",
+    value: string,
+  ) {
+    const numero = value === "" ? "" : Number(value);
+    setLoteFilas((prev) =>
+      prev.map((fila) => {
+        if (fila.id !== id) return fila;
+        if (key === "precio_mayorista") {
+          if (numero === "") return { ...fila, precio_mayorista: null };
+          return { ...fila, precio_mayorista: Number(numero) };
+        }
+        return { ...fila, [key]: numero === "" ? 0 : Number(numero) };
+      }),
+    );
+  }
+
+  function eliminarFilaLote(id: string) {
+    setLoteFilas((prev) => prev.filter((f) => f.id !== id));
+  }
+
+  async function guardarLote() {
+    if (loteFilas.length === 0) {
+      setError("No hay combinaciones para guardar.");
+      return;
+    }
+    setLoteSaving(true);
+    setError(null);
+    setMensaje(null);
+
+    const payload = loteFilas.map((f) => ({
+      referencia: f.referencia,
+      nombre: f.nombre,
+      color: f.color || null,
+      talla: f.talla || null,
+      cantidad_disponible: Number(f.cantidad_disponible || 0),
+      precio_unitario: Number(f.precio_unitario || 0),
+      precio_mayorista:
+        f.precio_mayorista === null ? null : Number(f.precio_mayorista),
+    }));
+
+    const { error } = await supabase.from("productos").insert(payload);
+    if (error) {
+      setError("No se pudo guardar el lote de productos.");
+      setLoteSaving(false);
+      return;
+    }
+
+    setMensaje(`Se guardaron ${payload.length} productos en lote.`);
+    cerrarLote();
+    await cargarProductos();
+    setLoteSaving(false);
   }
 
   function abrirEditar(p: Producto) {
@@ -225,6 +400,12 @@ function InventarioContent() {
           className="inline-flex items-center justify-center rounded bg-slate-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-800"
         >
           + Agregar producto
+        </button>
+        <button
+          onClick={abrirLote}
+          className="inline-flex items-center justify-center rounded border border-slate-300 bg-white px-3 py-1.5 text-sm font-medium text-slate-800 hover:bg-slate-50"
+        >
+          Agregar en lote
         </button>
       </div>
 
@@ -514,6 +695,311 @@ function InventarioContent() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showLoteModal && (
+        <div className="fixed inset-0 z-20 flex items-center justify-center bg-black/30 px-4">
+          <div className="w-full max-w-5xl rounded-md bg-white p-4 shadow-lg">
+            <div className="mb-3 flex items-center justify-between">
+              <h2 className="text-base font-semibold">Agregar en lote</h2>
+              <div className="text-xs text-slate-500">
+                Paso {loteStep} de 2
+              </div>
+            </div>
+
+            {loteStep === 1 ? (
+              <div className="space-y-3 text-sm">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-xs">Nombre del modelo</label>
+                    <input
+                      value={loteForm.nombreModelo}
+                      onChange={(e) =>
+                        setLoteForm((prev) => ({
+                          ...prev,
+                          nombreModelo: e.target.value,
+                        }))
+                      }
+                      className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-slate-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs">Referencia base</label>
+                    <input
+                      value={loteForm.referenciaBase}
+                      onChange={(e) =>
+                        setLoteForm((prev) => ({
+                          ...prev,
+                          referenciaBase: e.target.value,
+                        }))
+                      }
+                      className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-slate-400"
+                    />
+                  </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-xs">Colores</label>
+                    <div className="flex gap-2">
+                      <input
+                        value={loteForm.colorInput}
+                        onChange={(e) =>
+                          setLoteForm((prev) => ({
+                            ...prev,
+                            colorInput: e.target.value,
+                          }))
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            agregarChipLote("color");
+                          }
+                        }}
+                        placeholder="Escribe color y Enter"
+                        className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-slate-400"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => agregarChipLote("color")}
+                        className="rounded border border-slate-200 px-2 py-1.5 text-xs hover:bg-slate-50"
+                      >
+                        +
+                      </button>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {loteForm.colores.map((color) => (
+                        <span
+                          key={color}
+                          className="inline-flex items-center gap-1 rounded border border-slate-200 px-2 py-0.5 text-[11px]"
+                        >
+                          {color}
+                          <button
+                            type="button"
+                            onClick={() => eliminarChipLote("color", color)}
+                            className="text-red-600"
+                          >
+                            x
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="mb-1 block text-xs">Tallas</label>
+                    <div className="flex gap-2">
+                      <input
+                        value={loteForm.tallaInput}
+                        onChange={(e) =>
+                          setLoteForm((prev) => ({
+                            ...prev,
+                            tallaInput: e.target.value,
+                          }))
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            agregarChipLote("talla");
+                          }
+                        }}
+                        placeholder="Escribe talla y Enter"
+                        className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-slate-400"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => agregarChipLote("talla")}
+                        className="rounded border border-slate-200 px-2 py-1.5 text-xs hover:bg-slate-50"
+                      >
+                        +
+                      </button>
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {loteForm.tallas.map((talla) => (
+                        <span
+                          key={talla}
+                          className="inline-flex items-center gap-1 rounded border border-slate-200 px-2 py-0.5 text-[11px]"
+                        >
+                          {talla}
+                          <button
+                            type="button"
+                            onClick={() => eliminarChipLote("talla", talla)}
+                            className="text-red-600"
+                          >
+                            x
+                          </button>
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div>
+                    <label className="mb-1 block text-xs">Stock inicial</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={loteForm.stockInicial}
+                      onChange={(e) =>
+                        setLoteForm((prev) => ({
+                          ...prev,
+                          stockInicial: e.target.value,
+                        }))
+                      }
+                      className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-slate-400"
+                    />
+                  </div>
+                  <div>
+                    <label className="mb-1 block text-xs">Precio inicial</label>
+                    <input
+                      type="number"
+                      min={0}
+                      value={loteForm.precioInicial}
+                      onChange={(e) =>
+                        setLoteForm((prev) => ({
+                          ...prev,
+                          precioInicial: e.target.value,
+                        }))
+                      }
+                      className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-slate-400"
+                    />
+                  </div>
+                </div>
+
+                <div className="mt-3 flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={cerrarLote}
+                    className="rounded border border-slate-200 px-3 py-1.5 text-xs hover:bg-slate-50"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="button"
+                    onClick={generarCombinacionesLote}
+                    className="rounded bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800"
+                  >
+                    Generar combinaciones
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-3 text-sm">
+                <div className="overflow-x-auto rounded border border-slate-200">
+                  <table className="min-w-[980px] text-left text-xs">
+                    <thead className="border-b border-slate-200 bg-slate-50 uppercase text-[11px] text-slate-500">
+                      <tr>
+                        <th className="px-2 py-2">Nombre</th>
+                        <th className="px-2 py-2">Referencia</th>
+                        <th className="px-2 py-2">Color</th>
+                        <th className="px-2 py-2">Talla</th>
+                        <th className="px-2 py-2">Stock</th>
+                        <th className="px-2 py-2">Precio unitario</th>
+                        <th className="px-2 py-2">Precio mayorista</th>
+                        <th className="px-2 py-2 text-right">Acción</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {loteFilas.map((fila) => (
+                        <tr
+                          key={fila.id}
+                          className="border-b border-slate-100 last:border-0"
+                        >
+                          <td className="px-2 py-1.5">{fila.nombre}</td>
+                          <td className="px-2 py-1.5">{fila.referencia}</td>
+                          <td className="px-2 py-1.5">{fila.color}</td>
+                          <td className="px-2 py-1.5">{fila.talla}</td>
+                          <td className="px-2 py-1.5">
+                            <input
+                              type="number"
+                              min={0}
+                              value={fila.cantidad_disponible}
+                              onChange={(e) =>
+                                actualizarFilaLote(
+                                  fila.id,
+                                  "cantidad_disponible",
+                                  e.target.value,
+                                )
+                              }
+                              className="w-24 rounded border border-slate-200 px-2 py-1 text-xs outline-none focus:border-slate-400"
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input
+                              type="number"
+                              min={0}
+                              value={fila.precio_unitario}
+                              onChange={(e) =>
+                                actualizarFilaLote(
+                                  fila.id,
+                                  "precio_unitario",
+                                  e.target.value,
+                                )
+                              }
+                              className="w-28 rounded border border-slate-200 px-2 py-1 text-xs outline-none focus:border-slate-400"
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input
+                              type="number"
+                              min={0}
+                              value={fila.precio_mayorista ?? ""}
+                              onChange={(e) =>
+                                actualizarFilaLote(
+                                  fila.id,
+                                  "precio_mayorista",
+                                  e.target.value,
+                                )
+                              }
+                              className="w-28 rounded border border-slate-200 px-2 py-1 text-xs outline-none focus:border-slate-400"
+                            />
+                          </td>
+                          <td className="px-2 py-1.5 text-right">
+                            <button
+                              type="button"
+                              onClick={() => eliminarFilaLote(fila.id)}
+                              className="rounded border border-red-200 px-2 py-1 text-[11px] text-red-700 hover:bg-red-50"
+                            >
+                              Eliminar
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="mt-3 flex justify-between gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setLoteStep(1)}
+                    className="rounded border border-slate-200 px-3 py-1.5 text-xs hover:bg-slate-50"
+                  >
+                    Volver
+                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={cerrarLote}
+                      className="rounded border border-slate-200 px-3 py-1.5 text-xs hover:bg-slate-50"
+                    >
+                      Cancelar
+                    </button>
+                    <button
+                      type="button"
+                      onClick={guardarLote}
+                      disabled={loteSaving}
+                      className="rounded bg-slate-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-800 disabled:opacity-60"
+                    >
+                      {loteSaving ? "Guardando..." : "Guardar todo"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
