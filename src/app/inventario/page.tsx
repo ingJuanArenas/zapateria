@@ -11,6 +11,7 @@ type Producto = {
   color: string | null;
   talla: string | null;
   cantidad_disponible: number;
+  precio_costo: number;
   precio_unitario: number | null;
   precio_mayorista: number | null;
 };
@@ -21,6 +22,7 @@ type FormState = {
   color: string;
   talla: string;
   cantidad_disponible: string;
+  precio_costo: string;
   precio_unitario: string;
   precio_mayorista: string;
 };
@@ -34,6 +36,7 @@ type LoteFila = {
   color: string;
   talla: string;
   cantidad_disponible: number;
+  precio_costo: number;
   precio_unitario: number;
   precio_mayorista: number | null;
 };
@@ -44,6 +47,7 @@ const emptyForm: FormState = {
   color: "",
   talla: "",
   cantidad_disponible: "",
+  precio_costo: "",
   precio_unitario: "",
   precio_mayorista: "",
 };
@@ -56,6 +60,7 @@ const emptyLoteForm = {
   colores: [] as string[],
   tallas: [] as string[],
   stockInicial: "",
+  precioCostoInicial: "",
   precioInicial: "",
 };
 
@@ -86,15 +91,41 @@ function InventarioContent() {
   async function cargarProductos() {
     setLoading(true);
     setError(null);
+    setMensaje(null);
     const { data, error } = await supabase
       .from("productos")
       .select(
-        "id, referencia, nombre, color, talla, cantidad_disponible, precio_unitario, precio_mayorista",
+        "id, referencia, nombre, color, talla, cantidad_disponible, precio_costo, precio_unitario, precio_mayorista",
       )
       .order("nombre", { ascending: true });
 
     if (error) {
-      setError("No se pudo cargar el inventario. Intenta de nuevo.");
+      const esErrorPrecioCosto =
+        error.message?.toLowerCase().includes("precio_costo") ||
+        error.message?.toLowerCase().includes("column");
+      if (esErrorPrecioCosto) {
+        const respaldo = await supabase
+          .from("productos")
+          .select(
+            "id, referencia, nombre, color, talla, cantidad_disponible, precio_unitario, precio_mayorista",
+          )
+          .order("nombre", { ascending: true });
+        if (respaldo.error || !respaldo.data) {
+          setError("No se pudo cargar el inventario. Intenta de nuevo.");
+        } else {
+          setProductos(
+            (respaldo.data as any[]).map((p) => ({
+              ...p,
+              precio_costo: 0,
+            })) as Producto[],
+          );
+          setMensaje(
+            "Inventario cargado en modo compatibilidad. Ejecuta el ALTER TABLE para habilitar costo.",
+          );
+        }
+      } else {
+        setError("No se pudo cargar el inventario. Intenta de nuevo.");
+      }
     } else {
       setProductos(data as Producto[]);
     }
@@ -175,6 +206,7 @@ function InventarioContent() {
     }
 
     const stockBase = Number(loteForm.stockInicial || 0);
+    const costoBase = Number(loteForm.precioCostoInicial || 0);
     const precioBase = Number(loteForm.precioInicial || 0);
     const filas: LoteFila[] = [];
 
@@ -187,6 +219,7 @@ function InventarioContent() {
           color,
           talla,
           cantidad_disponible: stockBase >= 0 ? stockBase : 0,
+          precio_costo: costoBase >= 0 ? costoBase : 0,
           precio_unitario: precioBase >= 0 ? precioBase : 0,
           precio_mayorista: null,
         });
@@ -200,7 +233,11 @@ function InventarioContent() {
 
   function actualizarFilaLote(
     id: string,
-    key: "cantidad_disponible" | "precio_unitario" | "precio_mayorista",
+    key:
+      | "cantidad_disponible"
+      | "precio_costo"
+      | "precio_unitario"
+      | "precio_mayorista",
     value: string,
   ) {
     const numero = value === "" ? "" : Number(value);
@@ -235,12 +272,26 @@ function InventarioContent() {
       color: f.color || null,
       talla: f.talla || null,
       cantidad_disponible: Number(f.cantidad_disponible || 0),
+      precio_costo: Number(f.precio_costo || 0),
       precio_unitario: Number(f.precio_unitario || 0),
       precio_mayorista:
         f.precio_mayorista === null ? null : Number(f.precio_mayorista),
     }));
 
-    const { error } = await supabase.from("productos").insert(payload);
+    let { error } = await supabase.from("productos").insert(payload);
+    if (
+      error?.message?.toLowerCase().includes("precio_costo") ||
+      error?.message?.toLowerCase().includes("column")
+    ) {
+      const payloadSinCosto = payload.map(({ precio_costo, ...resto }) => resto);
+      const reintento = await supabase.from("productos").insert(payloadSinCosto);
+      error = reintento.error;
+      if (!error) {
+        setMensaje(
+          "Se guardó el lote, pero tu base de datos aún no tiene precio_costo. Ejecuta el ALTER TABLE para guardar costo real.",
+        );
+      }
+    }
     if (error) {
       setError("No se pudo guardar el lote de productos.");
       setLoteSaving(false);
@@ -261,6 +312,7 @@ function InventarioContent() {
       color: p.color ?? "",
       talla: p.talla ?? "",
       cantidad_disponible: String(p.cantidad_disponible ?? ""),
+      precio_costo: String(p.precio_costo ?? 0),
       precio_unitario: p.precio_unitario ? String(p.precio_unitario) : "",
       precio_mayorista: p.precio_mayorista ? String(p.precio_mayorista) : "",
     });
@@ -283,6 +335,7 @@ function InventarioContent() {
       color: form.color.trim() || null,
       talla: form.talla.trim() || null,
       cantidad_disponible: Number(form.cantidad_disponible || 0),
+      precio_costo: Number(form.precio_costo || 0),
       precio_unitario: form.precio_unitario
         ? Number(form.precio_unitario)
         : null,
@@ -291,16 +344,44 @@ function InventarioContent() {
         : null,
     };
 
-    let errorOp = null;
+    const { precio_costo, ...payloadSinCosto } = payload;
+    let errorOp: { message?: string } | null = null;
     if (editing) {
-      const { error } = await supabase
+      const primerIntento = await supabase
         .from("productos")
         .update(payload)
         .eq("id", editing.id);
-      errorOp = error;
+      errorOp = primerIntento.error;
+      if (
+        errorOp?.message?.toLowerCase().includes("precio_costo") ||
+        errorOp?.message?.toLowerCase().includes("column")
+      ) {
+        const reintento = await supabase
+          .from("productos")
+          .update(payloadSinCosto)
+          .eq("id", editing.id);
+        errorOp = reintento.error;
+        if (!errorOp) {
+          setMensaje(
+            "Producto guardado sin costo. Ejecuta el ALTER TABLE para guardar precio_costo.",
+          );
+        }
+      }
     } else {
-      const { error } = await supabase.from("productos").insert(payload);
-      errorOp = error;
+      const primerIntento = await supabase.from("productos").insert(payload);
+      errorOp = primerIntento.error;
+      if (
+        errorOp?.message?.toLowerCase().includes("precio_costo") ||
+        errorOp?.message?.toLowerCase().includes("column")
+      ) {
+        const reintento = await supabase.from("productos").insert(payloadSinCosto);
+        errorOp = reintento.error;
+        if (!errorOp) {
+          setMensaje(
+            "Producto guardado sin costo. Ejecuta el ALTER TABLE para guardar precio_costo.",
+          );
+        }
+      }
     }
 
     if (errorOp) {
@@ -441,7 +522,9 @@ function InventarioContent() {
                 <th className="px-3 py-2">Color</th>
                 <th className="px-3 py-2">Talla</th>
                 <th className="px-3 py-2">Stock</th>
+                <th className="px-3 py-2">Costo</th>
                 <th className="px-3 py-2">Precio</th>
+                <th className="px-3 py-2">Ganancia</th>
                 <th className="px-3 py-2 text-right">Acciones</th>
               </tr>
             </thead>
@@ -479,9 +562,26 @@ function InventarioContent() {
                       </span>
                     </td>
                     <td className="px-3 py-2 text-xs sm:text-sm">
+                      $ {p.precio_costo.toLocaleString("es-CO")}
+                    </td>
+                    <td className="px-3 py-2 text-xs sm:text-sm">
                       {p.precio_unitario
                         ? `$ ${p.precio_unitario.toLocaleString("es-CO")}`
                         : "-"}
+                    </td>
+                    <td className="px-3 py-2 text-xs sm:text-sm">
+                      <span
+                        className={
+                          (p.precio_unitario ?? 0) - p.precio_costo > 0
+                            ? "text-emerald-700"
+                            : "text-red-700"
+                        }
+                      >
+                        ${" "}
+                        {((p.precio_unitario ?? 0) - p.precio_costo).toLocaleString(
+                          "es-CO",
+                        )}
+                      </span>
                     </td>
                     <td className="px-3 py-2 text-right text-xs sm:text-sm">
                       <div className="flex justify-end gap-1">
@@ -562,7 +662,7 @@ function InventarioContent() {
                   />
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-2">
+              <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="mb-1 block text-xs">Stock inicial</label>
                   <input
@@ -576,10 +676,24 @@ function InventarioContent() {
                   />
                 </div>
                 <div>
+                  <label className="mb-1 block text-xs">Precio de costo</label>
+                  <input
+                    type="number"
+                    min={0}
+                    required
+                    value={form.precio_costo}
+                    onChange={(e) =>
+                      onChangeForm("precio_costo", e.target.value)
+                    }
+                    className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-slate-400"
+                  />
+                </div>
+                <div>
                   <label className="mb-1 block text-xs">Precio unidad</label>
                   <input
                     type="number"
                     min={0}
+                    required
                     value={form.precio_unitario}
                     onChange={(e) =>
                       onChangeForm("precio_unitario", e.target.value)
@@ -600,6 +714,12 @@ function InventarioContent() {
                   />
                 </div>
               </div>
+              {Number(form.precio_unitario || 0) - Number(form.precio_costo || 0) <=
+                0 && (
+                <div className="text-[11px] text-amber-700">
+                  Advertencia: la ganancia es cero o negativa con el precio actual.
+                </div>
+              )}
 
               {error && (
                 <div className="text-xs text-red-600">{error}</div>
@@ -836,7 +956,7 @@ function InventarioContent() {
                   </div>
                 </div>
 
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid gap-3 sm:grid-cols-3">
                   <div>
                     <label className="mb-1 block text-xs">Stock inicial</label>
                     <input
@@ -853,10 +973,29 @@ function InventarioContent() {
                     />
                   </div>
                   <div>
+                    <label className="mb-1 block text-xs">
+                      Precio de costo inicial
+                    </label>
+                    <input
+                      type="number"
+                      min={0}
+                      required
+                      value={loteForm.precioCostoInicial}
+                      onChange={(e) =>
+                        setLoteForm((prev) => ({
+                          ...prev,
+                          precioCostoInicial: e.target.value,
+                        }))
+                      }
+                      className="w-full rounded border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-slate-400"
+                    />
+                  </div>
+                  <div>
                     <label className="mb-1 block text-xs">Precio inicial</label>
                     <input
                       type="number"
                       min={0}
+                      required
                       value={loteForm.precioInicial}
                       onChange={(e) =>
                         setLoteForm((prev) => ({
@@ -888,8 +1027,13 @@ function InventarioContent() {
               </div>
             ) : (
               <div className="space-y-3 text-sm">
+                {loteFilas.some((f) => f.precio_unitario - f.precio_costo <= 0) && (
+                  <div className="text-[11px] text-amber-700">
+                    Hay combinaciones con ganancia cero o negativa.
+                  </div>
+                )}
                 <div className="overflow-x-auto rounded border border-slate-200">
-                  <table className="min-w-[980px] text-left text-xs">
+                  <table className="min-w-[1080px] text-left text-xs">
                     <thead className="border-b border-slate-200 bg-slate-50 uppercase text-[11px] text-slate-500">
                       <tr>
                         <th className="px-2 py-2">Nombre</th>
@@ -897,6 +1041,7 @@ function InventarioContent() {
                         <th className="px-2 py-2">Color</th>
                         <th className="px-2 py-2">Talla</th>
                         <th className="px-2 py-2">Stock</th>
+                        <th className="px-2 py-2">Precio costo</th>
                         <th className="px-2 py-2">Precio unitario</th>
                         <th className="px-2 py-2">Precio mayorista</th>
                         <th className="px-2 py-2 text-right">Acción</th>
@@ -925,6 +1070,21 @@ function InventarioContent() {
                                 )
                               }
                               className="w-24 rounded border border-slate-200 px-2 py-1 text-xs outline-none focus:border-slate-400"
+                            />
+                          </td>
+                          <td className="px-2 py-1.5">
+                            <input
+                              type="number"
+                              min={0}
+                              value={fila.precio_costo}
+                              onChange={(e) =>
+                                actualizarFilaLote(
+                                  fila.id,
+                                  "precio_costo",
+                                  e.target.value,
+                                )
+                              }
+                              className="w-28 rounded border border-slate-200 px-2 py-1 text-xs outline-none focus:border-slate-400"
                             />
                           </td>
                           <td className="px-2 py-1.5">

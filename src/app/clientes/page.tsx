@@ -8,7 +8,7 @@ type Cliente = {
   id: string;
   nombre: string;
   telefono: string | null;
-  tipo: string | null;
+
 };
 
 type VentaResumen = {
@@ -49,7 +49,7 @@ function ClientesContent() {
       setError(null);
       const { data, error: err } = await supabase
         .from("clientes")
-        .select("id, nombre, telefono, tipo")
+        .select("id, nombre, telefono")
         .order("nombre", { ascending: true });
       if (err || !data) {
         setError("No se pudo cargar la lista de clientes.");
@@ -146,7 +146,6 @@ function ClientesContent() {
               <tr>
                 <th className="px-3 py-2">Nombre</th>
                 <th className="px-3 py-2">Teléfono</th>
-                <th className="px-3 py-2">Tipo</th>
                 <th className="px-3 py-2 text-right">Acción</th>
               </tr>
             </thead>
@@ -158,12 +157,7 @@ function ClientesContent() {
                   onClick={() => abrirCliente(c)}
                 >
                   <td className="px-3 py-2 text-xs sm:text-sm">{c.nombre}</td>
-                  <td className="px-3 py-2 text-xs sm:text-sm">
-                    {c.telefono ?? "—"}
-                  </td>
-                  <td className="px-3 py-2 text-xs sm:text-sm capitalize">
-                    {c.tipo ?? "—"}
-                  </td>
+                  <td className="px-3 py-2 text-xs sm:text-sm">{c.telefono ?? "-"}</td>
                   <td className="px-3 py-2 text-right text-[11px]">
                     <button
                       type="button"
@@ -189,12 +183,9 @@ function ClientesContent() {
             <h2 className="mb-1 text-base font-semibold">
               Compras de {clienteActivo.nombre}
             </h2>
-            <p className="mb-3 text-xs text-slate-500">
-              {clienteActivo.telefono
-                ? `Tel: ${clienteActivo.telefono}`
-                : "Sin teléfono"}
+            <p className="text-sm text-slate-500">
+              Teléfono: {clienteActivo.telefono ?? "-"}
             </p>
-
             {errorCompras && (
               <div className="mb-2 text-xs text-red-600">{errorCompras}</div>
             )}

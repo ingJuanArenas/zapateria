@@ -17,6 +17,8 @@ type Producto = {
   nombre: string;
   cantidad_disponible: number;
   precio_unitario: number | null;
+  talla: string | null;
+  color: string | null;
 };
 
 type ItemCarrito = {
@@ -28,6 +30,7 @@ type ItemCarrito = {
 type Modalidad = "contado" | "credito";
 
 type UltimaFactura = {
+  numeroFactura: string;
   clienteNombre: string;
   fecha: string;
   modalidad: Modalidad;
@@ -37,6 +40,8 @@ type UltimaFactura = {
   items: {
     nombre: string;
     referencia: string;
+    color: string | null;
+    talla: string | null;
     cantidad: number;
     precio_unitario: number;
     subtotal: number;
@@ -78,7 +83,7 @@ function VentasContent() {
         supabase
           .from("productos")
           .select(
-            "id, referencia, nombre, cantidad_disponible, precio_unitario",
+            "id, referencia, nombre, color, talla, cantidad_disponible, precio_unitario",
           )
           .order("nombre", { ascending: true }),
       ]);
@@ -262,20 +267,56 @@ function VentasContent() {
 
       const totalVenta = total;
       const esCredito = modalidad === "credito";
-
-      const { data: venta, error: errorVenta } = await supabase
+      const fechaColombiaIso = new Date(
+        new Date().getTime() - 5 * 60 * 60 * 1000,
+      ).toISOString();
+      const { data: facturasData } = await supabase
         .from("ventas")
-        .insert({
-          cliente_id: idCliente,
-          total: totalVenta,
-          modalidad,
-          saldo_pendiente: esCredito ? totalVenta : 0,
-          estado: esCredito ? "pendiente" : "pagada",
-          notas: notas.trim() || null,
-          metodo_pago: metodoPago,
-        })
+        .select("numero_factura");
+      const ultimoNumero = (facturasData ?? []).reduce((acc, row: any) => {
+        const numeroActual = Number(String(row?.numero_factura ?? "").replace(/\D/g, ""));
+        if (!Number.isFinite(numeroActual)) return acc;
+        return numeroActual > acc ? numeroActual : acc;
+      }, 0);
+      const numeroFactura = String(ultimoNumero + 1);
+
+      const payloadVenta = {
+        numero_factura: numeroFactura,
+        fecha: fechaColombiaIso,
+        cliente_id: idCliente,
+        total: totalVenta,
+        modalidad,
+        saldo_pendiente: esCredito ? totalVenta : 0,
+        estado: esCredito ? "pendiente" : "pagada",
+        notas: notas.trim() || null,
+        metodo_pago: metodoPago,
+      };
+
+      let venta: { id: string; fecha: string } | null = null;
+      let errorVenta: { message?: string } | null = null;
+
+      const primerIntento = await supabase
+        .from("ventas")
+        .insert(payloadVenta)
         .select("id, fecha")
         .single();
+
+      venta = (primerIntento.data as { id: string; fecha: string } | null) ?? null;
+      errorVenta = primerIntento.error;
+
+      if (
+        errorVenta?.message?.toLowerCase().includes("numero_factura") ||
+        errorVenta?.message?.toLowerCase().includes("column")
+      ) {
+        const { numero_factura, ...payloadSinFactura } = payloadVenta;
+        const segundoIntento = await supabase
+          .from("ventas")
+          .insert(payloadSinFactura)
+          .select("id, fecha")
+          .single();
+        venta = (segundoIntento.data as { id: string; fecha: string } | null) ?? null;
+        errorVenta = segundoIntento.error;
+      }
 
       if (errorVenta || !venta) {
         setError("No se pudo registrar la venta.");
@@ -324,12 +365,15 @@ function VentasContent() {
       const itemsFactura = carrito.map((item) => ({
         nombre: item.producto.nombre,
         referencia: item.producto.referencia,
+        color: item.producto.color,
+        talla: item.producto.talla,
         cantidad: item.cantidad,
         precio_unitario: item.precio_unitario,
         subtotal: item.cantidad * item.precio_unitario,
       }));
 
       setUltimaFactura({
+        numeroFactura,
         clienteNombre,
         fecha: venta.fecha,
         modalidad,
@@ -472,6 +516,8 @@ function VentasContent() {
                         </span>
                       </div>
                       <div className="text-[11px] text-slate-500">
+                        {p.color && <span className="mr-2">Color: {p.color}</span>}
+                        {p.talla && <span className="mr-2">Talla: {p.talla}</span>}
                         Stock: {p.cantidad_disponible} ud
                       </div>
                     </div>
@@ -502,8 +548,10 @@ function VentasContent() {
                     className="flex items-center justify-between gap-2 rounded border border-slate-100 px-2 py-1"
                   >
                     <div>
-                      <div className="font-medium">{item.producto.nombre}</div>
+                    <div className="font-medium">{item.producto.nombre}</div>
                       <div className="text-[11px] text-slate-500">
+                        {item.producto.color && <span className="mr-2">{item.producto.color}</span>}
+                        {item.producto.talla && <span className="mr-2">Talla {item.producto.talla}</span>}
                         Stock: {item.producto.cantidad_disponible} ud
                       </div>
                     </div>
@@ -671,7 +719,7 @@ function VentasContent() {
               </head>
               <body>
                 <h1>Kairos Store</h1>
-                <p class="sub">Factura de venta</p>
+                <p class="sub">Factura de venta  N° ${ultimaFactura.numeroFactura} </p>
                 <div class="info">
                   <p><strong>Fecha:</strong> ${new Date(ultimaFactura.fecha).toLocaleString("es-CO", { dateStyle: "medium", timeStyle: "short" })}</p>
                   <p><strong>Cliente:</strong> ${ultimaFactura.clienteNombre}</p>
@@ -679,11 +727,13 @@ function VentasContent() {
                 <table>
                   <thead>
                     <tr>
-                      <th>Producto</th>
-                      <th>Ref.</th>
-                      <th>Cant.</th>
-                      <th>P. unit.</th>
-                      <th>Subtotal</th>
+                      <th> <strong> Producto </strong></th>
+                      <th> <strong> Ref. </strong></th>
+                      <th> <strong> Color </strong></th>
+                      <th> <strong> Talla </strong></th>
+                      <th> <strong> Cant. </strong></th>
+                      <th> <strong> P. unit. </strong></th>
+                      <th> <strong> Subtotal </strong></th>
                     </tr>
                   </thead>
                   <tbody>
@@ -691,6 +741,8 @@ function VentasContent() {
                       <tr>
                         <td>${it.nombre}</td>
                         <td>${it.referencia}</td>
+                        <td>${it.color} </td>
+                        <td>${it.talla }</td>
                         <td>${it.cantidad}</td>
                         <td>$ ${it.precio_unitario.toLocaleString("es-CO")}</td>
                         <td>$ ${it.subtotal.toLocaleString("es-CO")}</td>

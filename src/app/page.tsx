@@ -24,6 +24,7 @@ type Resumen = {
   ventasMes: number;
   gastosMes: number;
   productosBajos: ProductoBajo[];
+  valorInventario: number;
 };
 
 function getMesRango() {
@@ -65,7 +66,8 @@ function DashboardContent() {
       gastosMesRes,
       productosBajosRes,
       gastosListaRes,
-    ] = await Promise.all([
+      inventarioRes,
+      ] = await Promise.all([
       supabase
         .from("ventas")
         .select("saldo_pendiente")
@@ -91,6 +93,9 @@ function DashboardContent() {
         .gte("fecha", desde)
         .lt("fecha", hasta)
         .order("fecha", { ascending: false }),
+        supabase
+        .from("productos")
+        .select("cantidad_disponible, precio_costo"),
     ]);
 
     if (
@@ -98,7 +103,8 @@ function DashboardContent() {
       ventasMesRes.error ||
       gastosMesRes.error ||
       productosBajosRes.error ||
-      gastosListaRes.error
+      gastosListaRes.error ||
+      inventarioRes.error
     ) {
       setError("No se pudo cargar el resumen. Intenta nuevamente.");
       setLoading(false);
@@ -121,12 +127,17 @@ function DashboardContent() {
         0,
       );
 
-    setResumen({
-      totalCartera,
-      ventasMes,
-      gastosMes,
-      productosBajos: productosBajosRes.data as ProductoBajo[],
-    });
+      const valorInventario = (
+        inventarioRes.data as { cantidad_disponible: number; precio_costo: number }[]
+      ).reduce((acc, p) => acc + (p.cantidad_disponible ?? 0) * (p.precio_costo ?? 0), 0);
+      
+      setResumen({
+        totalCartera,
+        ventasMes,
+        gastosMes,
+        productosBajos: productosBajosRes.data as ProductoBajo[],
+        valorInventario,
+      });
     setGastos(gastosListaRes.data as Gasto[]);
     setLoading(false);
   }
@@ -191,7 +202,7 @@ function DashboardContent() {
         </div>
       )}
 
-      <div className="grid gap-3 md:grid-cols-4">
+      <div className="grid gap-3 md:grid-cols-5">
         <div className="rounded-md border border-slate-200 bg-white p-3">
           <div className="text-xs text-slate-500">💰 Total en cartera</div>
           <div className="mt-2 text-lg font-semibold text-slate-900">
@@ -220,6 +231,14 @@ function DashboardContent() {
             {loading || !resumen
               ? "..."
               : `$ ${resumen.gastosMes.toLocaleString("es-CO")}`}
+          </div>
+        </div>
+        <div className="rounded-md border border-slate-200 bg-white p-3">
+          <div className="text-xs text-slate-500">🏭 Valor inventario</div>
+          <div className="mt-2 text-lg font-semibold text-slate-900">
+            {loading || !resumen
+              ? "..."
+              : `$ ${resumen.valorInventario.toLocaleString("es-CO")}`}
           </div>
         </div>
       </div>

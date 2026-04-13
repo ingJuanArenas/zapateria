@@ -22,6 +22,7 @@ type Cliente = {
 type VentaConCliente = Venta & {
   cliente?: Cliente;
   referencias?: string;
+  colores?: string;
 };
 
 type DetalleItem = {
@@ -47,7 +48,7 @@ function CarteraContent(){
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [mensaje, setMensaje] = useState<string | null>(null);
-  const [orden, setOrden] = useState<"nombre" | "valor">("nombre");
+  const [orden, setOrden] = useState<"nombre" | "valor" | "fecha">("nombre");
   const [ventaSeleccionada, setVentaSeleccionada] = useState<VentaConCliente | null>(null);
   const [detalle, setDetalle] = useState<DetalleItem[]>([]);
   const [detalleCargando, setDetalleCargando] = useState(false);
@@ -103,22 +104,36 @@ function CarteraContent(){
 
     const idsVentas = ventasData.map((v) => v.id);
     let referenciasMap = new Map<string, string>();
+    let coloresMap = new Map<string, string>();
     
     if (idsVentas.length > 0) {
       const { data: itemsData } = await supabase
         .from("venta_items")
-        .select("venta_id, productos (referencia)")
+        .select("venta_id, productos (referencia, color)")
         .in("venta_id", idsVentas);
     
       if (itemsData) {
+        const refsByVenta = new Map<string, Set<string>>();
+        const coloresByVenta = new Map<string, Set<string>>();
         for (const item of itemsData as any[]) {
           const ref = item.productos?.referencia;
-          if (!ref) continue;
-          const actual = referenciasMap.get(item.venta_id);
-          referenciasMap.set(
-            item.venta_id,
-            actual ? `${actual}, ${ref}` : ref,
-          );
+          const color = item.productos?.color;
+          if (ref) {
+            const refs = refsByVenta.get(item.venta_id) ?? new Set<string>();
+            refs.add(ref);
+            refsByVenta.set(item.venta_id, refs);
+          }
+          if (color) {
+            const colores = coloresByVenta.get(item.venta_id) ?? new Set<string>();
+            colores.add(color);
+            coloresByVenta.set(item.venta_id, colores);
+          }
+        }
+        for (const [ventaId, refs] of refsByVenta.entries()) {
+          referenciasMap.set(ventaId, Array.from(refs).join(", "));
+        }
+        for (const [ventaId, colores] of coloresByVenta.entries()) {
+          coloresMap.set(ventaId, Array.from(colores).join(", "));
         }
       }
     }
@@ -128,6 +143,7 @@ function CarteraContent(){
         ...v,
         cliente: clientesMap.get(v.cliente_id),
         referencias: referenciasMap.get(v.id) ?? "-",
+        colores: coloresMap.get(v.id) ?? "-",
       }),
     );
 
@@ -203,6 +219,9 @@ function CarteraContent(){
       if (orden === "nombre") {
         return (a.cliente?.nombre ?? "").localeCompare(b.cliente?.nombre ?? "");
       }
+      if (orden === "fecha") {
+        return new Date(a.fecha).getTime() - new Date(b.fecha).getTime();
+      }
       return b.saldo_pendiente - a.saldo_pendiente;
     });
   }, [ventas, orden]);
@@ -215,6 +234,67 @@ function CarteraContent(){
       ),
     [ventas],
   );
+
+  function imprimirCartera() {
+    const fechaActual = new Date().toLocaleString("es-CO", {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+    const filas = ventasOrdenadas
+      .map(
+        (v) => `
+        <tr>
+          <td>${v.cliente?.nombre ?? "Cliente"}</td>
+          <td>${v.referencias ?? "-"}</td>
+          <td>${v.colores ?? "-"}</td>
+          <td>$ ${v.total.toLocaleString("es-CO")}</td>
+          <td>$ ${v.saldo_pendiente.toLocaleString("es-CO")}</td>
+          <td>${v.estado}</td>
+        </tr>`,
+      )
+      .join("");
+
+    const contenido = `
+      <html>
+        <head>
+          <meta charset="utf-8"/>
+          <title>Cartera Kairos Store</title>
+          <style>
+            body { font-family: Arial, sans-serif; font-size: 12px; padding: 28px; color: #1a1a1a; }
+            h1 { font-size: 18px; text-align: center; margin-bottom: 4px; }
+            .sub { text-align: center; color: #666; font-size: 11px; margin-bottom: 16px; }
+            table { width: 100%; border-collapse: collapse; font-size: 11px; }
+            th { border-bottom: 1px solid #ccc; padding: 6px 4px; text-align: left; color: #555; }
+            td { border-bottom: 1px solid #eee; padding: 6px 4px; }
+          </style>
+        </head>
+        <body>
+          <h1>Kairos Store — Cartera</h1>
+          <p class="sub">Fecha: ${fechaActual}</p>
+          <table>
+            <thead>
+              <tr>
+                <th>Cliente</th>
+                <th>Referencias</th>
+                <th>Colores</th>
+                <th>Total</th>
+                <th>Saldo pendiente</th>
+                <th>Estado</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${filas}
+            </tbody>
+          </table>
+          <script>window.onload = function(){ window.print(); }</script>
+        </body>
+      </html>
+    `;
+    const ventana = window.open("", "_blank");
+    if (!ventana) return;
+    ventana.document.write(contenido);
+    ventana.document.close();
+  }
 
   async function registrarPago(e: React.FormEvent) {
     e.preventDefault();
@@ -236,7 +316,7 @@ function CarteraContent(){
     const { error: pagoError } = await supabase.from("pagos").insert({
       venta_id: ventaPago.id,
       monto,
-      fecha: new Date().toISOString(),
+      fecha: new Date(new Date().getTime() - 5 * 60 * 60 * 1000).toISOString(),
       notas: notasPago.trim() || null,
       metodo_pago: metodoPago,
     });
@@ -276,10 +356,19 @@ function CarteraContent(){
             Controla las ventas a crédito, saldos pendientes y pagos realizados.
           </p>
         </div>
-        <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm">
-          <div className="text-xs text-slate-500">Total en cartera</div>
-          <div className="text-base font-semibold text-slate-900">
-            $ {totalCartera.toLocaleString("es-CO")}
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={imprimirCartera}
+            className="rounded border border-slate-200 bg-white px-3 py-2 text-xs font-medium hover:bg-slate-50"
+          >
+            Imprimir cartera
+          </button>
+          <div className="rounded-md border border-slate-200 bg-white px-3 py-2 text-sm">
+            <div className="text-xs text-slate-500">Total en cartera</div>
+            <div className="text-base font-semibold text-slate-900">
+              $ {totalCartera.toLocaleString("es-CO")}
+            </div>
           </div>
         </div>
       </div>
@@ -309,6 +398,13 @@ function CarteraContent(){
         >
           Mayor deuda
         </button>
+        <button
+          type="button"
+          onClick={() => setOrden("fecha")}
+          className={`rounded border px-2 py-1 text-[11px] ${orden === "fecha" ? "border-emerald-500 bg-emerald-50 text-emerald-700" : "border-slate-200 hover:bg-slate-50"}`}
+        >
+          Más antiguo
+        </button>
       </div>
       <div className="overflow-x-auto rounded-md border border-slate-200 bg-white">
         {loading ? (
@@ -324,9 +420,9 @@ function CarteraContent(){
             <thead className="border-b border-slate-200 bg-slate-50 text-xs uppercase text-slate-500">
               <tr>
                 <th className="px-3 py-2">Cliente</th>
-                <th className="px-3 py-2">Teléfono</th>
                 <th className="px-3 py-2">Fecha</th>
                 <th className="px-3 py-2">Referencia</th>
+                <th className="px-3 py-2">Colores</th>
                 <th className="px-3 py-2">Total</th>
                 <th className="px-3 py-2">Saldo pendiente</th>
                 <th className="px-3 py-2">Estado</th>
@@ -343,13 +439,13 @@ function CarteraContent(){
                     {v.cliente?.nombre ?? "Cliente"}
                   </td>
                   <td className="px-3 py-2 text-xs sm:text-sm">
-                    {v.cliente?.telefono ?? "-"}
-                  </td>
-                  <td className="px-3 py-2 text-xs sm:text-sm">
                     {new Date(v.fecha).toLocaleDateString("es-CO")}
                   </td>
                   <td className="px-3 py-2 text-xs sm:text-sm">
                     {v.referencias ?? "-"}
+                  </td>
+                  <td className="px-3 py-2 text-xs sm:text-sm">
+                    {v.colores ?? "-"}
                   </td>
                   <td className="px-3 py-2 text-xs sm:text-sm">
                     $ {v.total.toLocaleString("es-CO")}
